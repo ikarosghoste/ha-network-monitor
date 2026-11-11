@@ -1,0 +1,71 @@
+# Home Assistant add-on configuration
+name: "NUT to MQTT Monitor"
+version: "1.0.0"
+slug: "nut_mqtt_monitor"
+description: "Polls a Network UPS Tools server and publishes UPS telemetry and power events to MQTT."
+url: "https://github.com/YOUR_GITHUB_USERNAME/YOUR_ADDON_REPOSITORY/tree/main/nut-to-mqtt"
+startup: "services"
+boot: "auto"
+init: false
+host_network: true
+arch:
+  - "aarch64"
+  - "amd64"
+options:
+  log_level: "INFO"
+  nut_host: "192.168.86.252"
+  nut_port: 3493
+  nut_ups_name: "ups"
+  nut_username: ""
+  nut_password: ""
+  nut_timeout: 5
+  mqtt_host: "127.0.0.1"
+  mqtt_port: 1883
+  mqtt_username: ""
+  mqtt_password: ""
+  mqtt_client_id: "nut-mqtt-monitor"
+  mqtt_base_topic: "ups-monitor"
+  mqtt_alert_topic: "discord-ha/alerts"
+  mqtt_qos: 1
+  poll_interval: 15
+  heartbeat_interval: 60
+  battery_warning_threshold: 30
+  battery_critical_threshold: 15
+  runtime_warning_seconds: 600
+  runtime_critical_seconds: 300
+  alert_on_power_loss: true
+  alert_on_power_restore: true
+  alert_on_low_battery: true
+  alert_on_low_runtime: true
+  alert_on_nut_disconnect: true
+  alert_on_nut_reconnect: true
+  alert_on_replace_battery: true
+schema:
+  log_level: "list(INFO|DEBUG|WARNING|ERROR)"
+  nut_host: "str"
+  nut_port: "int(1,65535)"
+  nut_ups_name: "str"
+  nut_username: "str"
+  nut_password: "password"
+  nut_timeout: "int(1,60)"
+  mqtt_host: "str"
+  mqtt_port: "int(1,65535)"
+  mqtt_username: "str"
+  mqtt_password: "password"
+  mqtt_client_id: "str"
+  mqtt_base_topic: "str"
+  mqtt_alert_topic: "str"
+  mqtt_qos: "int(0,2)"
+  poll_interval: "int(5,3600)"
+  heartbeat_interval: "int(10,86400)"
+  battery_warning_threshold: "int(1,100)"
+  battery_critical_threshold: "int(1,100)"
+  runtime_warning_seconds: "int(1,86400)"
+  runtime_critical_seconds: "int(1,86400)"
+  alert_on_power_loss: "bool"
+  alert_on_power_restore: "bool"
+  alert_on_low_battery: "bool"
+  alert_on_low_runtime: "bool"
+  alert_on_nut_disconnect: "bool"
+  alert_on_nut_reconnect: "bool"
+  alert_on_replace_battery: "bool"

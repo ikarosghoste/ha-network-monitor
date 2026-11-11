@@ -1,40 +1,42 @@
-# Network Monitor
+# NUT to MQTT Monitor — Home Assistant add-on
 
-Home Assistant app for ICMP host monitoring with MQTT status/heartbeat publishing and Discord alerts over MQTT.
-
-## Install from this repository
-
-1. In Home Assistant, open **Settings → Apps → App Store**.
-2. Open the store menu and choose **Repositories**.
-3. Add `https://github.com/ikarosghoste/ha-network-monitor`.
-4. Refresh the store and locate **Network Monitor** under this repository.
-5. Install that repository's app and configure it in the app's **Configuration** tab.
-
-## Important: local and GitHub installations are different apps
-
-Home Assistant prefixes each app's `slug` with its repository ID. The built-in local repository ID is `local`, so an installed ID of `local_network_monitor` is the local-folder copy, not the copy from this GitHub repository.
-
-For this exact GitHub URL, Home Assistant's repository ID is `205fb5e6`; the full app ID is therefore `205fb5e6_network_monitor`. A GitHub repository update will not update `local_network_monitor`, because those are different app identities and sources.
-
-To use the GitHub-managed copy, add the repository as above and install `205fb5e6_network_monitor` from the store. Keep the local copy until the GitHub-managed copy is installed, configured, and verified. Copy the existing app's options into the new app's Configuration tab before starting it. Do not uninstall the working local app until the replacement is confirmed.
+This add-on polls the QNAP NUT server and publishes UPS telemetry and transition-based alerts to MQTT.
 
 ## Configuration
 
-All settings are exposed in the app UI and stored by Home Assistant in `/data/options.json`. There is no `.env` file and no `python-dotenv` dependency.
+All settings are configured in **Settings → Add-ons → NUT to MQTT Monitor → Configuration**.
+There is no `.env` file and no environment-variable configuration. Every application setting is exposed in the add-on Configuration UI; the application reads Home Assistant's `/data/options.json`.
 
-The `hosts` setting is a comma-separated list of `name=address` pairs, for example:
-
-`thoth=192.168.86.252,omoikane=192.168.86.253`
+The default NUT host is `192.168.86.252`, port `3493`, UPS name `ups`.
+The MQTT default is `127.0.0.1:1883`, assuming the broker is reachable from the HA host network.
 
 ## MQTT topics
 
-With the default base topic `monitor`, the app publishes:
+Under the configured base topic (default `ups-monitor`):
 
-- `monitor/availability` — retained `online`/`offline` availability.
-- `monitor/heartbeat` — retained monitor heartbeat JSON.
-- `monitor/<hostname>/status` — retained host state.
-- The configured Discord alert topic (default `discord-ha/alerts`) — non-retained JSON when a host transitions state, including when it is first confirmed offline after startup. Subscribe to the exact topic or `discord-ha/#`; the message is not retained, so a topic browser showing retained messages will not show old alerts.
+- `availability` — retained `online` / `offline` (Last Will)
+- `heartbeat` — retained JSON monitor health
+- `status` — retained NUT `ups.status` string
+- `battery` — retained battery percentage
+- `runtime` — retained remaining runtime in seconds
+- `voltage` — retained input voltage
+- `telemetry` — retained JSON telemetry
+- `nut_connection` — retained NUT connection state when a poll fails
 
-## Logging
+Alerts are published non-retained to the configured alert topic (default `discord-ha/alerts`) using:
+`title`, `message`, `severity`, and `source`.
 
-Startup configuration and MQTT connection status are logged at INFO. A heartbeat summary is logged at the configured heartbeat interval. Set `log_host_status` to true to log each host's current status at INFO on each polling cycle. Host state transitions are logged at WARNING.
+## QNAP setup
+
+Keep the QNAP USB UPS service and its own shutdown protection enabled.
+Enable QNAP Network UPS Master and allow the Home Assistant host IP as a client.
+This add-on only reads NUT variables; it does not send UPS shutdown or control commands.
+
+## Install
+
+1. Copy the `nut-mqtt-monitor` folder into your add-on repository.
+2. Add the repository in Home Assistant if it is not already configured.
+3. Install **NUT to MQTT Monitor** from the local add-on store.
+4. Configure all settings in the add-on UI and start it.
+
+The `repository.yaml` file at the repository root is a template; replace the GitHub URL and maintainer before publishing.
