@@ -33,7 +33,7 @@ With the default base topic `monitor`, the app publishes:
 - `monitor/availability` — retained `online`/`offline` availability.
 - `monitor/heartbeat` — retained monitor heartbeat JSON.
 - `monitor/<hostname>/status` — retained host state.
-- The configured Discord alert topic — non-retained JSON on host state transitions.
+- The configured Discord alert topic (default `discord-ha/alerts`) — non-retained JSON when a host transitions state, including when it is first confirmed offline after startup. Subscribe to the exact topic or `discord-ha/#`; the message is not retained, so a topic browser showing retained messages will not show old alerts.
 
 ## Logging
 

@@ -227,6 +227,7 @@ def publish(destination: str, payload, retain=True) -> bool:
                 result.rc,
             )
             return False
+        log.debug("MQTT message queued: %s (mid=%s)", destination, result.mid)
         return True
     except Exception:
         log.exception("MQTT publish exception for %s", destination)
@@ -250,8 +251,9 @@ def publish_alert(hostname: str, online: bool) -> bool:
         "source": "Home Assistant",
     }
 
+    log.info("Publishing Discord alert to MQTT topic %s", DISCORD_ALERT_TOPIC)
     if publish(DISCORD_ALERT_TOPIC, json.dumps(payload), retain=False):
-        log.info("Discord alert published: %s", title)
+        log.info("Discord alert queued for MQTT delivery: %s", title)
         return True
 
     log.error("Failed to publish Discord alert: %s", title)
@@ -280,6 +282,13 @@ def on_disconnect(client, userdata, flags, reason_code, properties):
         log.info("Disconnected from MQTT broker")
 
 
+def on_publish(client, userdata, mid, reason_code, properties):
+    if reason_code.is_failure:
+        log.error("MQTT broker rejected publish (mid=%s): %s", mid, reason_code)
+    else:
+        log.info("MQTT broker acknowledged publish (mid=%s)", mid)
+
+
 client = mqtt.Client(
     callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
     client_id=MONITOR_NAME,
@@ -297,6 +306,7 @@ client.will_set(
 
 client.on_connect = on_connect
 client.on_disconnect = on_disconnect
+client.on_publish = on_publish
 client.reconnect_delay_set(min_delay=1, max_delay=60)
 
 
@@ -345,9 +355,23 @@ def monitoring_cycle(executor):
             )
             continue
 
-        if previous is not None and previous != current:
+        # Alert on state transitions, and also alert when a host is first
+        # confirmed offline. Without the initial-offline case, a host that is
+        # already down at startup would be marked offline silently and would
+        # never generate an alert until it recovered and failed again.
+        initial_offline = previous is None and current is False
+        state_changed = previous is not None and previous != current
+
+        if initial_offline or state_changed:
             status_label = "ONLINE" if current else "OFFLINE"
-            log.warning("%s (%s): %s", hostname, HOSTS[hostname], status_label)
+            event_label = "INITIAL STATE" if initial_offline else "STATE CHANGE"
+            log.warning(
+                "%s (%s): %s (%s)",
+                hostname,
+                HOSTS[hostname],
+                status_label,
+                event_label,
+            )
             publish_alert(hostname, current)
 
         if last_published.get(hostname) != current:

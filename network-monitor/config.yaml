@@ -1,5 +1,5 @@
 name: "Network Monitor"
-version: "1.1.1"
+version: "1.1.2"
 slug: "network_monitor"
 description: "ICMP infrastructure monitoring with MQTT and Discord alerts"
 startup: services
