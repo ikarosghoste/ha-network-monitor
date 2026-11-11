@@ -1,13 +1,11 @@
-
 configuration:
   monitor_name:
     name: Monitor name
     description: Unique identifier for this monitoring instance.
   mqtt_host:
-    name: MQTT broker
-    description: Hostname or IP address of your MQTT broker.
+    name: MQTT broker host
   mqtt_port:
-    name: MQTT port
+    name: MQTT broker port
   mqtt_username:
     name: MQTT username
   mqtt_password:
@@ -16,28 +14,26 @@ configuration:
     name: MQTT base topic
   discord_alert_topic:
     name: Discord alert topic
+    description: MQTT topic consumed by your Discord notification bot.
   hosts:
-    name: Monitoring hosts
-    description: Comma-separated entries in hostname=IP format.
+    name: Hosts to monitor
+    description: Comma-separated name=address entries.
   poll_interval:
-    name: Poll interval
-    description: Seconds between monitoring cycles.
+    name: Poll interval (seconds)
   ping_timeout:
-    name: Ping timeout
-    description: Maximum seconds to wait for a ping response.
+    name: Ping timeout (seconds)
   heartbeat_interval:
-    name: Heartbeat interval
-    description: Seconds between MQTT heartbeat messages.
+    name: Heartbeat interval (seconds)
   failure_threshold:
     name: Failure threshold
-    description: Consecutive failures required before marking a host offline.
+    description: Consecutive failed pings before a host is marked offline.
   recovery_threshold:
     name: Recovery threshold
-    description: Consecutive successes required before marking a host online.
+    description: Consecutive successful pings before a host is marked online again.
   max_workers:
-    name: Concurrent workers
+    name: Concurrent ping workers
   log_level:
-    name: Logging level
+    name: Log level
   log_host_status:
     name: Log host status
-    description: Include individual host status in DEBUG logs.
+    description: Write each host's current state to the app log on each polling cycle.
