@@ -1,0 +1,16 @@
+name: "Network Monitor"
+version: "1.0.0"
+slug: "network_monitor"
+description: "ICMP infrastructure monitoring with MQTT and Discord alerts"
+startup: services
+boot: auto
+init: false
+host_network: true
+
+arch:
+  - aarch64
+  - amd64
+
+map:
+  - type: app_config
+    read_only: false
