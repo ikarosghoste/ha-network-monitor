@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 # ============================================================
 
 # Always load .env from the script directory
-load_dotenv("/config/.env")
+load_dotenv("/config/.env", override=True)
 
 MONITOR_NAME = os.getenv(
     "MONITOR_NAME",
