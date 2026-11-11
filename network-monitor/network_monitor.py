@@ -8,97 +8,94 @@ import os
 import platform
 import signal
 import subprocess
+import sys
 import time
 
 from datetime import datetime, timezone
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
-from dotenv import load_dotenv
 
 
 # ============================================================
 # Configuration
 # ============================================================
 
-# Always load .env from the script directory
-load_dotenv("/config/.env", override=True)
-
-MONITOR_NAME = os.getenv(
-    "MONITOR_NAME",
-    "raspberrypi-monitor"
-)
-
-# MQTT
-MQTT_HOST = os.getenv("MQTT_HOST", "127.0.0.1")
-MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-MQTT_USERNAME = os.getenv("MQTT_USERNAME") or None
-MQTT_PASSWORD = os.getenv("MQTT_PASSWORD") or None
-
-MQTT_BASE_TOPIC = os.getenv(
-    "MQTT_BASE_TOPIC",
-    "monitor"
-)
-
-DISCORD_ALERT_TOPIC = os.getenv(
-    "DISCORD_ALERT_TOPIC",
-    "discord-ha/alerts"
-)
-
-# Monitoring
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))
-PING_TIMEOUT = int(os.getenv("PING_TIMEOUT", "2"))
-HEARTBEAT_INTERVAL = int(
-    os.getenv("HEARTBEAT_INTERVAL", "60")
-)
-
-# Consecutive checks required to change state
-FAILURE_THRESHOLD = int(
-    os.getenv("FAILURE_THRESHOLD", "3")
-)
-
-RECOVERY_THRESHOLD = int(
-    os.getenv("RECOVERY_THRESHOLD", "2")
-)
-
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
+OPTIONS_FILE = Path("/data/options.json")
 
 
-# ============================================================
-# Host Configuration
-# ============================================================
+def load_config():
+    if not OPTIONS_FILE.is_file():
+        raise FileNotFoundError(
+            f"Home Assistant options file not found: {OPTIONS_FILE}"
+        )
+
+    with OPTIONS_FILE.open("r", encoding="utf-8") as file:
+        config = json.load(file)
+
+    required = [
+        "monitor_name",
+        "mqtt_host",
+        "mqtt_port",
+        "mqtt_base_topic",
+        "discord_alert_topic",
+        "hosts",
+    ]
+
+    missing = [key for key in required if key not in config]
+    if missing:
+        raise ValueError(f"Missing configuration options: {', '.join(missing)}")
+
+    return config
+
+
+CONFIG = load_config()
+
+MONITOR_NAME = CONFIG["monitor_name"]
+MQTT_HOST = CONFIG["mqtt_host"]
+MQTT_PORT = int(CONFIG["mqtt_port"])
+MQTT_USERNAME = CONFIG.get("mqtt_username") or None
+MQTT_PASSWORD = CONFIG.get("mqtt_password") or None
+
+MQTT_BASE_TOPIC = CONFIG["mqtt_base_topic"].strip("/")
+DISCORD_ALERT_TOPIC = CONFIG["discord_alert_topic"]
+
+POLL_INTERVAL = int(CONFIG["poll_interval"])
+PING_TIMEOUT = int(CONFIG["ping_timeout"])
+HEARTBEAT_INTERVAL = int(CONFIG["heartbeat_interval"])
+FAILURE_THRESHOLD = int(CONFIG["failure_threshold"])
+RECOVERY_THRESHOLD = int(CONFIG["recovery_threshold"])
+MAX_WORKERS = int(CONFIG["max_workers"])
+
+LOG_LEVEL = CONFIG.get("log_level", "INFO").upper()
+LOG_HOST_STATUS = bool(CONFIG.get("log_host_status", True))
+
 
 def load_hosts():
     hosts = {}
 
-    raw_hosts = os.getenv("HOSTS", "")
-
-    for entry in raw_hosts.split(","):
+    for entry in CONFIG["hosts"].split(","):
         entry = entry.strip()
-
         if not entry:
             continue
 
-        try:
-            hostname, address = entry.split("=", 1)
+        if "=" not in entry:
+            raise ValueError(f"Invalid host entry: {entry}")
 
-            hostname = hostname.strip()
-            address = address.strip()
+        hostname, address = entry.split("=", 1)
+        hostname = hostname.strip()
+        address = address.strip()
 
-            if not hostname or not address:
-                raise ValueError
+        if not hostname or not address:
+            raise ValueError(f"Invalid host entry: {entry}")
 
-            hosts[hostname] = address
+        if hostname in hosts:
+            raise ValueError(f"Duplicate hostname: {hostname}")
 
-        except ValueError:
-            raise ValueError(
-                f"Invalid HOSTS entry: {entry}"
-            )
+        hosts[hostname] = address
 
     if not hosts:
-        raise ValueError(
-            "No monitoring hosts configured in .env"
-        )
+        raise ValueError("No monitoring hosts configured")
 
     return hosts
 
@@ -107,20 +104,17 @@ HOSTS = load_hosts()
 
 
 # ============================================================
-# Configuration Validation
+# Validation
 # ============================================================
 
-if POLL_INTERVAL <= 0:
-    raise ValueError("POLL_INTERVAL must be greater than zero")
+if POLL_INTERVAL < 1:
+    raise ValueError("poll_interval must be >= 1")
 
-if PING_TIMEOUT <= 0:
-    raise ValueError("PING_TIMEOUT must be greater than zero")
+if PING_TIMEOUT < 1:
+    raise ValueError("ping_timeout must be >= 1")
 
 if FAILURE_THRESHOLD < 1 or RECOVERY_THRESHOLD < 1:
     raise ValueError("Failure and recovery thresholds must be >= 1")
-
-if MAX_WORKERS < 1:
-    raise ValueError("MAX_WORKERS must be >= 1")
 
 
 # ============================================================
@@ -128,9 +122,11 @@ if MAX_WORKERS < 1:
 # ============================================================
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout,
+    force=True,
 )
 
 log = logging.getLogger(MONITOR_NAME)
@@ -141,14 +137,8 @@ log = logging.getLogger(MONITOR_NAME)
 # ============================================================
 
 running = True
-
-# Confirmed host states
 latest_status = {}
-
-# Last successfully queued MQTT states
 last_published = {}
-
-# Consecutive check counters
 failure_counts = {}
 recovery_counts = {}
 
@@ -156,13 +146,13 @@ last_heartbeat = 0
 
 
 # ============================================================
-# Shutdown Handling
+# Shutdown
 # ============================================================
 
 def shutdown(signum, frame):
     global running
 
-    log.info("Shutdown requested")
+    log.info("Shutdown requested (signal %s)", signum)
     running = False
 
 
@@ -175,196 +165,141 @@ signal.signal(signal.SIGTERM, shutdown)
 # ============================================================
 
 def ping(host: str) -> bool:
-
-    system = platform.system().lower()
-
-    if system == "windows":
-        cmd = [
-            "ping",
-            "-n", "1",
+    if platform.system().lower() == "windows":
+        command = [
+            "ping", "-n", "1",
             "-w", str(PING_TIMEOUT * 1000),
-            host
+            host,
         ]
-
     else:
-        cmd = [
-            "ping",
-            "-c", "1",
+        command = [
+            "ping", "-c", "1",
             "-W", str(PING_TIMEOUT),
-            host
+            host,
         ]
 
     try:
         result = subprocess.run(
-            cmd,
+            command,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=PING_TIMEOUT + 2
+            timeout=PING_TIMEOUT + 2,
+            check=False,
         )
-
         return result.returncode == 0
 
-    except (subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        log.debug("Ping execution failed for %s: %s", host, exc)
         return False
 
 
 # ============================================================
-# MQTT Publishing
+# MQTT
 # ============================================================
 
-def topic(name: str) -> str:
+def topic(name):
     return f"{MQTT_BASE_TOPIC}/{name}"
 
 
-def publish(name: str, payload, retain=True) -> bool:
-
+def publish(destination, payload, retain=True):
     if not client.is_connected():
+        log.warning("Cannot publish to %s: MQTT disconnected", destination)
         return False
 
     try:
         result = client.publish(
-            topic(name),
+            destination,
             payload,
             qos=1,
-            retain=retain
+            retain=retain,
         )
 
-        return result.rc == mqtt.MQTT_ERR_SUCCESS
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+            log.error(
+                "MQTT publish failed for %s (code %s)",
+                destination,
+                result.rc,
+            )
+            return False
 
-    except Exception as exc:
-        log.error("MQTT publish failed: %s", exc)
+        return True
+
+    except Exception:
+        log.exception("MQTT publish exception for %s", destination)
         return False
 
 
-# ============================================================
-# Discord Alerts
-# ============================================================
-
-def publish_alert(hostname: str, online: bool) -> bool:
-
+def publish_alert(hostname, online):
     if online:
         title = f"PING RECOVERED | {hostname.upper()}"
-        message = (
-            f"{hostname} is responding to ICMP ping again."
-        )
+        message = f"{hostname} is responding to ICMP ping again."
         severity = "info"
-
     else:
         title = f"PING ALERT | {hostname.upper()}"
-        message = (
-            f"{hostname} is not responding to ICMP ping."
-        )
+        message = f"{hostname} is not responding to ICMP ping."
         severity = "critical"
 
     payload = {
         "title": title,
         "message": message,
         "severity": severity,
-        "source": "Home Assistant"
+        "source": "Home Assistant",
     }
 
-    try:
-        result = client.publish(
-            DISCORD_ALERT_TOPIC,
-            json.dumps(payload),
-            qos=1,
-            retain=False
-        )
+    if publish(
+        DISCORD_ALERT_TOPIC,
+        json.dumps(payload),
+        retain=False,
+    ):
+        log.info("Discord alert published: %s", title)
+        return True
 
-        if result.rc == mqtt.MQTT_ERR_SUCCESS:
-            log.info("Discord alert queued: %s", title)
-            return True
-
-        log.error(
-            "Discord alert publish failed: %s",
-            result.rc
-        )
-
-        return False
-
-    except Exception as exc:
-        log.error("Discord alert error: %s", exc)
-        return False
+    log.error("Failed to publish Discord alert: %s", title)
+    return False
 
 
-# ============================================================
-# MQTT Callbacks
-# ============================================================
-
-def on_connect(
-    client,
-    userdata,
-    flags,
-    reason_code,
-    properties
-):
-
+def on_connect(client, userdata, flags, reason_code, properties):
     if reason_code.is_failure:
-        log.error(
-            "MQTT connection failed: %s",
-            reason_code
-        )
+        log.error("MQTT connection failed: %s", reason_code)
         return
 
-    log.info("Connected to MQTT broker")
+    log.info("Connected to MQTT broker at %s:%s", MQTT_HOST, MQTT_PORT)
 
-    # Announce monitor availability
-    publish("availability", "online")
+    publish(topic("availability"), "online")
 
-    # Republish known states after reconnecting
     for hostname, status in latest_status.items():
-
         publish(
-            f"{hostname}/status",
-            "online" if status else "offline"
+            topic(f"{hostname}/status"),
+            "online" if status else "offline",
         )
 
 
-def on_disconnect(
-    client,
-    userdata,
-    flags,
-    reason_code,
-    properties
-):
-
+def on_disconnect(client, userdata, flags, reason_code, properties):
     if reason_code.is_failure:
-        log.warning(
-            "Unexpected MQTT disconnection: %s",
-            reason_code
-        )
+        log.warning("Unexpected MQTT disconnection: %s", reason_code)
+    else:
+        log.info("Disconnected from MQTT broker")
 
-
-# ============================================================
-# MQTT Client
-# ============================================================
 
 client = mqtt.Client(
     callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-    client_id=MONITOR_NAME
+    client_id=MONITOR_NAME,
 )
 
 if MQTT_USERNAME:
-    client.username_pw_set(
-        MQTT_USERNAME,
-        MQTT_PASSWORD
-    )
+    client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 
-# Automatically mark monitor offline if connection drops
 client.will_set(
     topic("availability"),
     payload="offline",
     qos=1,
-    retain=True
+    retain=True,
 )
 
 client.on_connect = on_connect
 client.on_disconnect = on_disconnect
 
-client.reconnect_delay_set(
-    min_delay=1,
-    max_delay=60
-)
+client.reconnect_delay_set(min_delay=1, max_delay=60)
 
 
 # ============================================================
@@ -372,145 +307,102 @@ client.reconnect_delay_set(
 # ============================================================
 
 def monitor_host(item):
-
     hostname, address = item
-
     return hostname, ping(address)
 
 
 def monitoring_cycle(executor):
-
     global latest_status
 
-    results = executor.map(
-        monitor_host,
-        HOSTS.items()
-    )
+    results = executor.map(monitor_host, HOSTS.items())
 
     for hostname, reachable in results:
-
-        # Initialize counters
         failure_counts.setdefault(hostname, 0)
         recovery_counts.setdefault(hostname, 0)
 
         previous = latest_status.get(hostname)
 
-        # ----------------------------------------------------
-        # Track consecutive failures and successes
-        # ----------------------------------------------------
-
         if reachable:
-
             recovery_counts[hostname] += 1
             failure_counts[hostname] = 0
-
         else:
-
             failure_counts[hostname] += 1
             recovery_counts[hostname] = 0
 
-        # ----------------------------------------------------
-        # Determine confirmed state
-        # ----------------------------------------------------
-
+        # Initial discovery: do not alert on startup.
         if previous is None:
-
-            # Initial discovery
-            # Avoid generating alerts on startup
-
             if reachable:
                 latest_status[hostname] = True
-
             elif failure_counts[hostname] >= FAILURE_THRESHOLD:
                 latest_status[hostname] = False
 
         elif previous and failure_counts[hostname] >= FAILURE_THRESHOLD:
-
             latest_status[hostname] = False
 
         elif not previous and recovery_counts[hostname] >= RECOVERY_THRESHOLD:
-
             latest_status[hostname] = True
 
         current = latest_status.get(hostname)
 
-        # Await initial confirmation
         if current is None:
-
             log.warning(
-                "%s: awaiting initial confirmation (%d/%d failures)",
+                "%s: awaiting initial confirmation (%s/%s failures)",
                 hostname,
                 failure_counts[hostname],
-                FAILURE_THRESHOLD
+                FAILURE_THRESHOLD,
             )
-
             continue
 
-        # ----------------------------------------------------
-        # Detect state transitions
-        # ----------------------------------------------------
-
+        # State transition
         if previous is not None and previous != current:
-
             status = "ONLINE" if current else "OFFLINE"
 
             log.warning(
                 "%s (%s): %s",
                 hostname,
                 HOSTS[hostname],
-                status
+                status,
             )
 
             publish_alert(hostname, current)
 
-        # ----------------------------------------------------
-        # Publish MQTT status
-        # ----------------------------------------------------
-
+        # Publish only when state changes or MQTT needs resynchronizing.
         if last_published.get(hostname) != current:
-
             status = "online" if current else "offline"
 
-            if publish(
-                f"{hostname}/status",
-                status
-            ):
-
+            if publish(topic(f"{hostname}/status"), status):
                 last_published[hostname] = current
 
-        # ----------------------------------------------------
-        # Diagnostic logging
-        # ----------------------------------------------------
-
-        log.debug(
-            "%s: %s | failures=%d | recoveries=%d",
-            hostname,
-            "ONLINE" if current else "OFFLINE",
-            failure_counts[hostname],
-            recovery_counts[hostname]
-        )
+        if LOG_HOST_STATUS:
+            log.debug(
+                "%s (%s): %s",
+                hostname,
+                HOSTS[hostname],
+                "ONLINE" if current else "OFFLINE",
+            )
 
 
 # ============================================================
-# Monitor Heartbeat
+# Heartbeat
 # ============================================================
 
 def send_heartbeat():
-
     global last_heartbeat
 
-    now = time.time()
+    now = time.monotonic()
 
     if now - last_heartbeat < HEARTBEAT_INTERVAL:
         return
 
     online_count = sum(
-        1 for status in latest_status.values() if status
+        1 for status in latest_status.values() if status is True
     )
 
     offline_count = sum(
-        1 for status in latest_status.values() if not status
+        1 for status in latest_status.values() if status is False
     )
+
+    unknown_count = len(HOSTS) - online_count - offline_count
 
     payload = {
         "monitor": MONITOR_NAME,
@@ -518,15 +410,21 @@ def send_heartbeat():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "hosts_monitored": len(HOSTS),
         "hosts_online": online_count,
-        "hosts_offline": offline_count
+        "hosts_offline": offline_count,
     }
 
-    if publish(
-        "heartbeat",
-        json.dumps(payload)
-    ):
-
+    if publish(topic("heartbeat"), json.dumps(payload)):
         last_heartbeat = now
+
+        log.info(
+            "Heartbeat published | %d/%d online | %d offline | %d awaiting confirmation | MQTT connected",
+            online_count,
+            len(HOSTS),
+            offline_count,
+            unknown_count,
+        )
+    else:
+        log.warning("Heartbeat not published; MQTT unavailable")
 
 
 # ============================================================
@@ -534,75 +432,65 @@ def send_heartbeat():
 # ============================================================
 
 def main():
-
-    log.info("Starting %s", MONITOR_NAME)
+    log.info("=" * 55)
+    log.info("Starting Network Monitor: %s", MONITOR_NAME)
     log.info("Monitoring %d hosts", len(HOSTS))
-    log.info("MQTT broker: %s:%d", MQTT_HOST, MQTT_PORT)
-    log.info("Polling interval: %d seconds", POLL_INTERVAL)
-    log.info("Ping timeout: %d seconds", PING_TIMEOUT)
-    log.info("Failure threshold: %d", FAILURE_THRESHOLD)
-    log.info("Recovery threshold: %d", RECOVERY_THRESHOLD)
-    log.info("Concurrent workers: %d", MAX_WORKERS)
 
     for hostname, address in HOSTS.items():
         log.info("Registered host: %s (%s)", hostname, address)
 
+    log.info("MQTT broker: %s:%s", MQTT_HOST, MQTT_PORT)
+    log.info("MQTT base topic: %s", MQTT_BASE_TOPIC)
+    log.info("Discord alert topic: %s", DISCORD_ALERT_TOPIC)
+    log.info("Polling interval: %ss", POLL_INTERVAL)
+    log.info("Ping timeout: %ss", PING_TIMEOUT)
+    log.info("Heartbeat interval: %ss", HEARTBEAT_INTERVAL)
+    log.info("Failure threshold: %s", FAILURE_THRESHOLD)
+    log.info("Recovery threshold: %s", RECOVERY_THRESHOLD)
+    log.info("Concurrent workers: %s", MAX_WORKERS)
+    log.info("Log level: %s", LOG_LEVEL)
+    log.info("=" * 55)
+
+    log.info("Connecting to MQTT broker...")
+
     client.connect_async(
         MQTT_HOST,
         MQTT_PORT,
-        keepalive=60
+        keepalive=60,
     )
-
     client.loop_start()
 
     try:
-
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=MAX_WORKERS
         ) as executor:
 
             while running:
-
                 cycle_start = time.monotonic()
 
                 monitoring_cycle(executor)
                 send_heartbeat()
 
                 elapsed = time.monotonic() - cycle_start
-
-                sleep_time = max(
-                    0,
-                    POLL_INTERVAL - elapsed
-                )
+                sleep_time = max(0, POLL_INTERVAL - elapsed)
 
                 if running:
                     time.sleep(sleep_time)
 
     finally:
-
-        log.info("Stopping monitor")
+        log.info("Stopping Network Monitor")
 
         if client.is_connected():
-
-            publish("availability", "offline")
-
-            # Allow queued messages to finish
+            publish(topic("availability"), "offline")
             client.disconnect()
 
         client.loop_stop()
+        log.info("Network Monitor stopped")
 
-        log.info("Monitor stopped")
-
-
-# ============================================================
-# Entry Point
-# ============================================================
 
 if __name__ == "__main__":
-
     try:
         main()
-
     except Exception:
-        log.exception("Fatal monitor error")
+        log.exception("Fatal Network Monitor error")
         raise
