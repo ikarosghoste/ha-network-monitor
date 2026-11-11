@@ -12,6 +12,10 @@ arch:
   - aarch64
   - amd64
 
+map:
+  - type: app_config
+    read_only: false
+
 options:
   monitor_name: "raspberrypi-monitor"
   mqtt_host: "core-mosquitto"
@@ -20,22 +24,22 @@ options:
   mqtt_password: ""
   mqtt_base_topic: "monitor"
   discord_alert_topic: "discord-ha/alerts"
-  hosts: "proxmox=192.168.1.10,qnap=192.168.1.20,plex=192.168.1.30"
+  hosts: "thoth=192.168.86.252,omoikane=192.168.86.253"
   poll_interval: 15
   ping_timeout: 2
   heartbeat_interval: 60
   failure_threshold: 3
   recovery_threshold: 2
   max_workers: 10
-  log_level: "INFO"
+  log_level: "info"
   log_host_status: true
 
 schema:
   monitor_name: str
   mqtt_host: str
   mqtt_port: port
-  mqtt_username: str
-  mqtt_password: password
+  mqtt_username: str?
+  mqtt_password: password?
   mqtt_base_topic: str
   discord_alert_topic: str
   hosts: str
@@ -45,5 +49,5 @@ schema:
   failure_threshold: int(1,100)
   recovery_threshold: int(1,100)
   max_workers: int(1,100)
-  log_level: "list(DEBUG|INFO|WARNING|ERROR)"
+  log_level: list(debug|info|warning|error)
   log_host_status: bool
